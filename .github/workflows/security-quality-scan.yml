@@ -1,0 +1,169 @@
+name: Security and Quality Analysis
+
+on:
+  push:
+    branches: [ develop ]
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [ develop ]
+  schedule:
+    - cron: '0 0 * * 0'  # Run weekly at midnight on Sunday
+  workflow_dispatch:
+
+# No global permissions - we'll handle this at job level
+
+jobs:
+  trivy-scan:
+    name: Trivy Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Run Trivy vulnerability scanner (dependencies)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          output: 'trivy-results.txt'
+          severity: 'CRITICAL,HIGH'
+          
+      - name: Run Trivy vulnerability scanner (secrets)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          output: 'trivy-secrets.txt'
+          security-checks: 'secret'
+      
+      - name: Save scan results as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-scan-results
+          path: |
+            trivy-results.txt
+            trivy-secrets.txt
+          retention-days: 7
+
+  docker-scan:
+    name: Docker Image Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+          
+      - name: Set lowercase repository owner
+        id: repo_owner
+        run: echo "owner=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+          
+      - name: Build Docker image
+        run: docker build -t ghcr.io/${{ steps.repo_owner.outputs.owner }}/nandhubus-frontend:${{ github.sha }} .
+          
+      - name: Run Trivy vulnerability scanner for Docker image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'ghcr.io/${{ steps.repo_owner.outputs.owner }}/nandhubus-frontend:${{ github.sha }}'
+          format: 'table'
+          output: 'trivy-docker.txt'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Save Docker scan results as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-docker-results
+          path: trivy-docker.txt
+          retention-days: 7
+
+  sonarqube:
+    name: SonarQube Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.12.0'  # Updated to a version that meets SonarQube's requirements
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+      
+      - name: Create sonar-project.properties
+        run: |
+          cat > sonar-project.properties << EOF
+          # Project identification
+          sonar.projectKey=nandhubus-frontend
+          sonar.projectName=nandhubus-frontend
+          sonar.projectVersion=0.1.0
+          
+          # Source and exclusions
+          sonar.sources=app,components,hooks,lib,types
+          sonar.exclusions=**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/__tests__/**,**/*.d.ts,node_modules/**,**/node_modules/**,**/*story.js,**/*.stories.tsx,**/*.mdx,.next/**,out/**,dist/**,build/**,public/**
+          
+          # Test configuration
+          sonar.test.inclusions=**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/__tests__/**
+          
+          # Language configuration
+          sonar.sourceEncoding=UTF-8
+          sonar.javascript.file.suffixes=.js,.jsx
+          sonar.typescript.file.suffixes=.ts,.tsx
+          EOF
+      
+      # Use Docker to run SonarQube scanner with Node.js 20
+      - name: Run SonarQube Analysis with Docker
+        run: |
+          # Create a custom image with Node.js 20
+          echo 'FROM node:20-alpine
+          RUN apk add --no-cache openjdk17 curl unzip
+          COPY . /app
+          WORKDIR /app
+          CMD ["echo", "Ready to scan"]' > Dockerfile.sonar
+          
+          # Build the custom image
+          docker build -t sonar-node20 -f Dockerfile.sonar .
+          
+          # Use the custom image to run the scanner
+          docker run --rm \
+            -e SONAR_HOST_URL="${{ secrets.SONAR_HOST_URL }}" \
+            -e SONAR_TOKEN="${{ secrets.SONAR_TOKEN }}" \
+            -v "${PWD}:/app" \
+            --workdir /app \
+            sonar-node20 \
+            sh -c "node --version && \
+                   curl -sSLo sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip && \
+                   unzip -q sonar-scanner.zip && \
+                   chmod +x sonar-scanner-5.0.1.3006-linux/bin/sonar-scanner && \
+                   rm -f sonar-scanner-5.0.1.3006-linux/jre/bin/java && \
+                   mkdir -p sonar-scanner-5.0.1.3006-linux/jre/bin && \
+                   ln -s /usr/bin/java sonar-scanner-5.0.1.3006-linux/jre/bin/java && \
+                   export JAVA_HOME=/usr/lib/jvm/java-17-openjdk && \
+                   export PATH=$PATH:$JAVA_HOME/bin && \
+                   ./sonar-scanner-5.0.1.3006-linux/bin/sonar-scanner \
+                   -Dsonar.projectKey=nandhubus-frontend \
+                   -Dsonar.java.binaries=/non-existent \
+                   -Dsonar.sourceEncoding=UTF-8"
+          
+          # Display the report file contents
+          if [ -f .scannerwork/report-task.txt ]; then
+            cat .scannerwork/report-task.txt
+          else
+            echo "Report file not found!"
+            ls -la .scannerwork/ || echo "Directory not found"
+          fi
+      
+      - name: Check Quality Gate
+        id: quality-gate
+        continue-on-error: true
+        uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }} 

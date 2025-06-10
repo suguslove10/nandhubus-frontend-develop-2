@@ -1,0 +1,123 @@
+name: Build and Push Docker Image
+on:
+  push:
+    branches: [ "develop" ]
+  workflow_dispatch:
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1  # Shallow clone for faster checkout
+      
+      # Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+          platforms: linux/amd64
+      
+      # Use GitHub's cache action with improved settings
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ hashFiles('**/Dockerfile', '**/package.json', '**/package-lock.json', '**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+      
+      # Login to GitHub Container Registry
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Extract Docker metadata
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=leatest,enable=${{ github.ref == format('refs/heads/{0}', 'develop') }}
+            type=sha,format=short
+            type=ref,event=branch
+      
+      # Build and push Docker image
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: ${{ github.event_name != 'pull_request' && 'linux/amd64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+          # Add build args to speed up the build process
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+            NODE_ENV=production
+          # Enable BuildKit features for faster builds
+          provenance: false
+      
+      # Move cache efficiently
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+      
+      # Trigger Dokploy Deployment
+      - name: Get Compose ID
+        id: get-compose-id
+        run: |
+          echo "Fetching compose ID from Dokploy..."
+          COMPOSE_ID=$(curl -s -X 'GET' \
+            '${{ secrets.DOKPLOY_URL }}/api/project.all' \
+            -H 'accept: application/json' \
+            -H 'x-api-key: ${{ secrets.DOKPLOY_API_KEY }}' \
+            | jq -r '.[] | .compose[] | select(.name=="${{ secrets.COMPOSE_NAME }}") | .composeId')
+          
+          if [ -z "$COMPOSE_ID" ] || [ "$COMPOSE_ID" = "null" ]; then
+            echo "❌ Failed to get compose ID"
+            echo "Available compose names:"
+            curl -s -X 'GET' \
+              '${{ secrets.DOKPLOY_URL }}/api/project.all' \
+              -H 'accept: application/json' \
+              -H 'x-api-key: ${{ secrets.DOKPLOY_API_KEY }}' \
+              | jq -r '.[] | .compose[]?.name // empty'
+            exit 1
+          fi
+          
+          echo "✅ Found compose ID: $COMPOSE_ID"
+          echo "compose_id=$COMPOSE_ID" >> $GITHUB_OUTPUT
+      
+      - name: Deploy Compose
+        run: |
+          COMPOSE_ID="${{ steps.get-compose-id.outputs.compose_id }}"
+          echo "Deploying compose ID: $COMPOSE_ID"
+          
+          if [ -z "$COMPOSE_ID" ]; then
+            echo "❌ No compose ID found, cannot deploy"
+            exit 1
+          fi
+          
+          RESPONSE=$(curl -s -X POST '${{ secrets.DOKPLOY_URL }}/api/compose.deploy' \
+            -H "accept: application/json" \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: ${{ secrets.DOKPLOY_API_KEY }}" \
+            -d "{\"composeId\":\"$COMPOSE_ID\"}")
+          
+          echo "Deploy response: $RESPONSE"
+          
+          

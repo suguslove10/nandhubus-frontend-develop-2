@@ -1,0 +1,29 @@
+{
+  "header": {
+    "home": "Home",
+    "contact_us": "Contact us",
+    "my_trips": "My trips",
+    "my_profile": "My profile",
+    "logout": "Logout",
+    "login_signup": "Login / Sign Up",
+    "language_selector": "Language selector"
+  },
+  "footer": {
+    "quick_links": "Quick Links",
+    "information_center": "Information Center",
+    "stay_connected": "Stay Connected",
+    "reach_us": "Reach us out here",
+    "social_media": "Social Media",
+    "contact_us": "Contact us",
+    "terms_conditions": "Terms & Conditions",
+    "faqs": "Faq's",
+    "facebook": "Facebook",
+    "instagram": "Instagram",
+    "twitter": "Twitter",
+    "linkedin": "LinkedIn",
+    "email": "Email",
+    "phone": "Phone",
+    "powered_by": "Powered By Seabed2Crest Technologies",
+    "copyright": "© 2023 Nandhu Bus. All rights reserved."
+  }
+}
