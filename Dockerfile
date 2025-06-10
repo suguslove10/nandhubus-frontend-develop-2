@@ -13,7 +13,7 @@ RUN apk add --no-cache build-base g++ make python3 vips-dev
 
 # Install dependencies based on the preferred package manager
 COPY package.json package-lock.json* ./
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 
 # 2. Rebuild the source code only when needed
 FROM base AS builder
@@ -44,13 +44,13 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 RUN apk add --no-cache vips-dev
 
 # Disable telemetry during runtime
-ENV NEXT_TELEMETRY_DISABLED 1
+ENV NEXT_TELEMETRY_DISABLED=1
 
 USER nextjs
 
 EXPOSE 3000
 
 ENV PORT=3000
-ENV HOSTNAME "0.0.0.0"
+ENV HOSTNAME="0.0.0.0"
 
 CMD ["node", "server.js"]
