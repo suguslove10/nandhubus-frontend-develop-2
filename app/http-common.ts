@@ -7,7 +7,7 @@ import { store } from "./Redux/store";
 import { logout, login } from "./Redux/authSlice";
 import { UserResponse } from "./types/loginResponse.type";
 
-const BASE_URL = "http://dev.nandhubus.com";
+const BASE_URL = "http://35.154.36.220:3006/";
 
 const http = axios.create({
   baseURL: BASE_URL,
